@@ -19,13 +19,6 @@ with st.sidebar:
     if not api_key:
         api_key = st.secrets.get("GEMINI_API_KEY", "")
 
-    # モード切り替え
-    mode = st.radio(
-        "X_list / Y_list の指定方法",
-        ["Geminiで自動生成する", "手入力する（改行区切り）"],
-        index=0
-    )
-
     # モデル名（将来の変更に備えて外出し）
     model_name = st.text_input("Model", value="gemini-2.5-flash")
     st.caption("※ 生成スピード重視の既定値です。必要に応じて変更してください。")
@@ -49,7 +42,7 @@ def gen_response(client: genai.Client, question: str) -> str:
     return (resp.text or "").strip()
 
 def list_gen(client: genai.Client, prompt: str) -> List[str]:
-    """GeminiにJSONのリストとして返してもらう"""
+    """GeminiにJSONのリストとして返してもらう（フォールバックつき）"""
     resp = client.models.generate_content(
         model=model_name,
         contents=prompt,
@@ -58,18 +51,17 @@ def list_gen(client: genai.Client, prompt: str) -> List[str]:
             "response_schema": list,
         },
     )
-    # .parsed が使える実装に合わせる
     data = getattr(resp, "parsed", None)
     if isinstance(data, list):
         return [str(x).strip() for x in data if str(x).strip()]
     # フォールバック（JSON文字列で返った場合）
     try:
-        parsed = json.loads(resp.text)
+        parsed = json.loads(resp.text or "")
         if isinstance(parsed, list):
             return [str(x).strip() for x in parsed if str(x).strip()]
     except Exception:
         pass
-    # 最終手段：改行や箇条書きを分解
+    # さらにフォールバック：改行や箇条書きを分解
     text = (resp.text or "").strip()
     lines = [ln.strip("-• \t") for ln in text.splitlines() if ln.strip()]
     return lines
@@ -78,8 +70,15 @@ def list_gen(client: genai.Client, prompt: str) -> List[str]:
 col1, col2 = st.columns(2)
 
 with col1:
-    st.subheader("Xの設定")
-    if mode == "Geminiで自動生成する":
+    st.subheader("X の設定")
+    x_mode = st.radio(
+        "X_list の指定方法",
+        ["Geminiで自動生成する", "手入力（改行区切り）"],
+        index=0,
+        key="x_mode",
+        horizontal=False
+    )
+    if x_mode == "Geminiで自動生成する":
         x_topics = st.text_area(
             "X_TOPICS プロンプト",
             value="業種を3個あげて。回答はJSONの配列（日本語）で。",
@@ -93,11 +92,18 @@ with col1:
         )
 
 with col2:
-    st.subheader("Yの設定")
-    if mode == "Geminiで自動生成する":
+    st.subheader("Y の設定")
+    y_mode = st.radio(
+        "Y_list の指定方法",
+        ["Geminiで自動生成する", "手入力（改行区切り）"],
+        index=0,
+        key="y_mode",
+        horizontal=False
+    )
+    if y_mode == "Geminiで自動生成する":
         y_topics = st.text_area(
             "Y_TOPICS プロンプト",
-            value="生成AIの導入を評価するポイントを3つあげて。回答はJSONの配列（日本語）で。",
+            value="生成AIを導入しうる部署を3つあげて。回答はJSONの配列（日本語）で。",
             height=110
         )
     else:
@@ -125,14 +131,19 @@ if run:
 
     client = make_client(api_key)
 
-    if mode == "Geminiで自動生成する":
+    # X_list 準備
+    if x_mode == "Geminiで自動生成する":
         with st.spinner("X_list を生成中..."):
             X_list = list_gen(client, x_topics)
+    else:
+        X_list = [ln.strip() for ln in (x_manual or "").splitlines() if ln.strip()]
+
+    # Y_list 準備
+    if y_mode == "Geminiで自動生成する":
         with st.spinner("Y_list を生成中..."):
             Y_list = list_gen(client, y_topics)
     else:
-        X_list = [ln.strip() for ln in x_manual.splitlines() if ln.strip()]
-        Y_list = [ln.strip() for ln in y_manual.splitlines() if ln.strip()]
+        Y_list = [ln.strip() for ln in (y_manual or "").splitlines() if ln.strip()]
 
     if not X_list or not Y_list:
         st.warning("X_list または Y_list が空です。設定を確認してください。")
@@ -167,7 +178,6 @@ if run:
                 st.write(answer if answer else "（空の応答）")
 
                 # クリップボードコピー（JS）
-                # content は JSON エスケープして埋め込む
                 payload = json.dumps(answer or "", ensure_ascii=False)
                 uid = f"copy_{xi}_{yi}"
 
